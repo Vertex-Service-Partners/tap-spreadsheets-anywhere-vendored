@@ -32,7 +32,7 @@ config:
   extractors:
   - name: tap-spreadsheets-anywhere
     namespace: tap_spreadsheets_anywhere
-    pip_url: git+https://github.com/archdotdev/tap-spreadsheets-anywhere.git
+    pip_url: git+https://github.com/ets/tap-spreadsheets-anywhere.git
     executable: tap-spreadsheets-anywhere
     capabilities:
     - catalog
