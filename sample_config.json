@@ -31,6 +31,18 @@
                     "type": "integer"
                 }
             }
+        },
+        {
+            "path": "s3://my-encrypted-bucket",
+            "name": "encrypted_data",
+            "pattern": "encrypted/.*\\.csv\\.gpg$",
+            "start_date": "2017-05-01T00:00:00Z",
+            "key_properties": ["id"],
+            "format": "detect",
+            "gpg": {
+                "home": "/home/user/.gnupg",
+                "passphrase": "my_secret_passphrase"
+            }
         }
     ]
 }

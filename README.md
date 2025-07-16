@@ -21,6 +21,9 @@ Multiple individual files with the same schema can be configured & ingested into
 ### Compression
 smart_open allows reading and writing gzip and bzip2 files. They are transparently handled over HTTP, S3, and other protocols, too, based on the extension of the file being opened.
 
+### GPG Decryption
+This tap supports automatic decryption of GPG-encrypted files. Files with extensions `.gpg`, `.pgp`, or `.asc` will be automatically decrypted before processing. To use GPG decryption, you need to have GPG installed on your system and configure the appropriate settings in your table configuration.
+
 ### Configuration
 
 The Meltano configuration for this tap must contain the key 'tables' which holds an array of json objects describing each set of targeted source files.
@@ -29,7 +32,7 @@ config:
   extractors:
   - name: tap-spreadsheets-anywhere
     namespace: tap_spreadsheets_anywhere
-    pip_url: git+https://github.com/ets/tap-spreadsheets-anywhere.git
+    pip_url: git+https://github.com/archdotdev/tap-spreadsheets-anywhere.git
     executable: tap-spreadsheets-anywhere
     capabilities:
     - catalog
@@ -117,6 +120,10 @@ Each object in the 'tables' array describes one or more CSV or Excel spreadsheet
 - **delimiter**: (optional) the delimiter to use when format is 'csv'. Defaults to a comma ',' but you can set delimiter to 'detect' to leverage the csv "Sniffer" for auto-detecting delimiter. 
 - **quotechar**: (optional) the character used to surround values that may contain delimiters - defaults to a double quote '"'
 - **json_path**: (optional) the JSON key under which the list of objets to use is located. Defaults to None, corresponding to an array at the top level of the JSON tree.
+- **gpg**: (optional) GPG decryption settings for encrypted files. This is an object with the following optional keys:
+  - **home**: Path to GPG home directory containing your keyrings (defaults to system GPG home)
+  - **passphrase**: Passphrase for the private key (if required)
+  - **binary**: Path to the GPG binary (defaults to 'gpg')
 
 ### Automatic Config Generation
 

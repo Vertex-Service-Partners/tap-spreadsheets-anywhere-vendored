@@ -6,9 +6,13 @@ import tap_spreadsheets_anywhere.excel_handler
 import tap_spreadsheets_anywhere.json_handler
 import tap_spreadsheets_anywhere.jsonl_handler
 import tap_spreadsheets_anywhere.parquet_handler
+import tap_spreadsheets_anywhere.gpg_handler
 
 from azure.storage.blob import BlobServiceClient
 import os
+import logging
+
+LOGGER = logging.getLogger(__name__)
 
 
 class InvalidFormatError(Exception):
@@ -131,9 +135,55 @@ def get_row_iterator(table_spec, uri):
     universal_newlines = table_spec['universal_newlines'] if 'universal_newlines' in table_spec else True
     encoding = table_spec['encoding'] if 'encoding' in table_spec else 'utf-8'
     skip_initial = table_spec.get("skip_initial", 0)
-
+    
+    # Check if the file is GPG encrypted
+    if tap_spreadsheets_anywhere.gpg_handler.is_gpg_encrypted(uri):
+        # Get GPG configuration from table_spec
+        gpg_config = table_spec.get('gpg', {})
+        gpg_home = gpg_config.get('home')
+        passphrase = gpg_config.get('passphrase')
+        gpg_binary = gpg_config.get('binary', 'gpg')
+        
+        LOGGER.info(f"Detected GPG-encrypted file: {uri}")
+        
+        # Read the encrypted file
+        encrypted_reader = get_streamreader(uri, universal_newlines=False, open_mode='rb')
+        
+        # Decrypt the file and process based on the decrypted content
+        with tap_spreadsheets_anywhere.gpg_handler.decrypt_gpg_file(
+            encrypted_reader, 
+            gpg_home=gpg_home, 
+            passphrase=passphrase,
+            gpg_binary=gpg_binary
+        ) as decrypted_stream:
+            # Remove GPG extension to detect the actual format
+            decrypted_uri = uri
+            for ext in ['.gpg', '.pgp', '.asc']:
+                if decrypted_uri.lower().endswith(ext):
+                    decrypted_uri = decrypted_uri[:-len(ext)]
+                    break
+            
+            # The decrypted_stream is a file handle, get its path and create a file:// URI
+            decrypted_file_path = decrypted_stream.name
+            decrypted_file_uri = f"file://{decrypted_file_path}"
+            
+            # Update the URI in table_spec to help with format detection
+            # but keep the original URI pattern for matching
+            temp_table_spec = table_spec.copy()
+            
+            # If format is not specified, try to detect from the decrypted filename
+            if 'format' not in temp_table_spec or temp_table_spec['format'] == 'detect':
+                # Use the decrypted_uri (without GPG extension) for format detection
+                temp_table_spec['_original_uri'] = decrypted_uri
+            
+            # Recursively call get_row_iterator with the temporary file URI
+            return get_row_iterator(temp_table_spec, decrypted_file_uri)
+    
+    # Original logic for non-encrypted files
     if 'format' not in table_spec or table_spec['format'] == 'detect':
-        lowered_uri = uri.lower()
+        # Use _original_uri if available (for decrypted files), otherwise use uri
+        detection_uri = table_spec.get('_original_uri', uri)
+        lowered_uri = detection_uri.lower()
         if lowered_uri.endswith(".xlsx") or lowered_uri.endswith(".xls"):
             format = 'excel'
         elif lowered_uri.endswith(".json") or lowered_uri.endswith(".js"):

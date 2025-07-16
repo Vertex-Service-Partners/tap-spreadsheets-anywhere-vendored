@@ -35,6 +35,11 @@ CONFIG_CONTRACT = Schema({
                 Required('type'): Any(Any('null','string','integer','number','date-time','object'),
                                       [Any('null','string','integer','number','date-time','object')])
             }
+        },
+        Optional('gpg'): {
+            Optional('home'): str,
+            Optional('passphrase'): str,
+            Optional('binary'): str
         }
     }]
 })
