@@ -40,6 +40,14 @@ CONFIG_CONTRACT = Schema({
             Optional('home'): str,
             Optional('passphrase'): str,
             Optional('binary'): str
+        },
+        Optional('ssh'): {
+            Optional('key_filename'): str,
+            Optional('jump_hosts'): [{
+                Required('host'): str,
+                Optional('user'): str,
+                Optional('port'): int
+            }]
         }
     }]
 })

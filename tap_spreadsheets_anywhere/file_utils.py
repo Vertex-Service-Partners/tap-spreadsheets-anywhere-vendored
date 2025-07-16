@@ -131,7 +131,7 @@ def get_matching_objects(table_spec, modified_since=None):
     elif protocol == 'file':
         target_objects = list_files_in_local_bucket(bucket, table_spec.get('search_prefix'))
     elif protocol in ["sftp"]:
-        target_objects = list_files_in_SSH_bucket(table_spec['path'],table_spec.get('search_prefix'))
+        target_objects = list_files_in_SSH_bucket(table_spec['path'], table_spec.get('search_prefix'), table_spec)
     elif protocol in ["ftp"]:
         target_objects = list_files_in_ftp_server(table_spec['path'],table_spec.get('search_prefix'))
     elif protocol in ["gs"]:
@@ -168,7 +168,180 @@ def get_matching_objects(table_spec, modified_since=None):
     return sorted(to_return, key=lambda item: item['last_modified'])
 
 
-def list_files_in_SSH_bucket(uri, search_prefix=None):
+def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=None, jump_hosts=None, transport_params=None):
+    """
+    Connect to SSH server with support for jump hosts (ProxyJump).
+    
+    Args:
+        host: Target host
+        user: Target user
+        port: Target port
+        password: Password (optional)
+        key_filename: Path to private key file
+        jump_hosts: List of jump host specifications, each as a dict with 'user' and 'host' keys
+        transport_params: Additional transport parameters
+    
+    Returns:
+        paramiko.SSHClient instance
+    """
+    import paramiko
+    
+    LOGGER.info(f"Connecting to SSH host {user}@{host}:{port}")
+    if key_filename:
+        LOGGER.info(f"Using SSH key: {key_filename}")
+    if jump_hosts:
+        jump_host_strs = [f"{jh.get('user', user)}@{jh['host']}:{jh.get('port', 22)}" for jh in jump_hosts]
+        LOGGER.info(f"Using jump hosts: {jump_host_strs}")
+    
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    if jump_hosts and len(jump_hosts) > 0:
+        # Create jump host connections
+        jump_connections = []
+        
+        for i, jump_host in enumerate(jump_hosts):
+            jump_client = paramiko.SSHClient()
+            jump_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            if i == 0:
+                # First jump host connects directly
+                try:
+                    LOGGER.info(f"Connecting to jump host {i+1}: {jump_host.get('user', user)}@{jump_host['host']}:{jump_host.get('port', 22)}")
+                    jump_client.connect(
+                        hostname=jump_host['host'],
+                        username=jump_host.get('user', user),
+                        port=jump_host.get('port', 22),
+                        key_filename=key_filename,
+                        allow_agent=True,
+                        look_for_keys=True
+                    )
+                    LOGGER.info(f"Successfully connected to jump host {i+1}")
+                except Exception as e:
+                    LOGGER.error(f"Failed to connect to jump host {i+1}: {e}")
+                    raise
+            else:
+                # Subsequent jump hosts connect through previous jump host
+                prev_client = jump_connections[-1]
+                jump_channel = prev_client.get_transport().open_channel(
+                    'direct-tcpip',
+                    (jump_host['host'], jump_host.get('port', 22)),
+                    ('127.0.0.1', 0)
+                )
+                jump_client.connect(
+                    hostname=jump_host['host'],
+                    username=jump_host.get('user', user),
+                    port=jump_host.get('port', 22),
+                    key_filename=key_filename,
+                    sock=jump_channel,
+                    allow_agent=True,
+                    look_for_keys=True
+                )
+            
+            jump_connections.append(jump_client)
+        
+        # Connect to final host through last jump host
+        final_jump = jump_connections[-1]
+        dest_channel = final_jump.get_transport().open_channel(
+            'direct-tcpip',
+            (host, port),
+            ('127.0.0.1', 0)
+        )
+        
+        ssh_client.connect(
+            hostname=host,
+            username=user,
+            port=port,
+            password=password,
+            key_filename=key_filename,
+            sock=dest_channel,
+            allow_agent=True,
+            look_for_keys=True
+        )
+        
+        # Store jump connections to prevent them from being garbage collected
+        ssh_client._jump_connections = jump_connections
+    else:
+        # Direct connection without jump hosts
+        ssh_client.connect(
+            hostname=host,
+            username=user,
+            port=port,
+            password=password,
+            key_filename=key_filename,
+            allow_agent=True,
+            look_for_keys=True
+        )
+    
+    return ssh_client
+
+
+def parse_ssh_uri_with_jumps(uri):
+    """
+    Parse SSH URI that may include jump host specifications.
+    
+    Supported formats:
+    - sftp://user@host/path
+    - sftp://user@host:port/path
+    - sftp://user:password@host/path
+    - sftp://user@host/path?jump=user1@host1,user2@host2
+    - sftp://user@host/path?jump=user1@host1:port1,user2@host2:port2&key=/path/to/key
+    
+    Returns:
+        dict with keys: scheme, user, password, host, port, uri_path, jump_hosts, key_filename
+    """
+    import urllib.parse
+    
+    parsed = urllib.parse.urlparse(uri)
+    
+    # Extract basic components
+    result = {
+        'scheme': parsed.scheme,
+        'user': parsed.username or 'root',
+        'password': parsed.password,
+        'host': parsed.hostname,
+        'port': parsed.port or 22,
+        'uri_path': parsed.path or '/',
+        'jump_hosts': [],
+        'key_filename': None
+    }
+    
+    # Parse query parameters for jump hosts and key file
+    if parsed.query:
+        params = urllib.parse.parse_qs(parsed.query)
+        
+        # Handle jump hosts
+        if 'jump' in params:
+            jump_spec = params['jump'][0]
+            for jump in jump_spec.split(','):
+                jump = jump.strip()
+                if '@' in jump:
+                    jump_user, jump_host_port = jump.split('@', 1)
+                    if ':' in jump_host_port:
+                        jump_host, jump_port = jump_host_port.split(':', 1)
+                        jump_port = int(jump_port)
+                    else:
+                        jump_host = jump_host_port
+                        jump_port = 22
+                else:
+                    jump_user = result['user']
+                    jump_host = jump
+                    jump_port = 22
+                
+                result['jump_hosts'].append({
+                    'user': jump_user,
+                    'host': jump_host,
+                    'port': jump_port
+                })
+        
+        # Handle key file
+        if 'key' in params:
+            result['key_filename'] = os.path.expanduser(params['key'][0])
+    
+    return result
+
+
+def list_files_in_SSH_bucket(uri, search_prefix=None, table_spec=None):
     try:
         import paramiko
     except ImportError:
@@ -178,10 +351,38 @@ def list_files_in_SSH_bucket(uri, search_prefix=None):
         )
         raise
 
-    parsed_uri = ssh_transport.parse_uri(uri)
-    uri_path = parsed_uri.pop('uri_path')
-    transport_params={'connect_kwargs':{'allow_agent':False,'look_for_keys':False}}
-    ssh = ssh_transport._connect_ssh(parsed_uri['host'], parsed_uri['user'], parsed_uri['port'], parsed_uri['password'], transport_params=transport_params)
+    # Check if jump hosts are configured in table_spec
+    ssh_config = table_spec.get('ssh', {}) if table_spec else {}
+    
+    # Try new parsing first for jump host support
+    if '?jump=' in uri or '&jump=' in uri or ssh_config.get('jump_hosts'):
+        parsed_uri = parse_ssh_uri_with_jumps(uri)
+        
+        # Override with table_spec SSH configuration if provided
+        if ssh_config.get('key_filename'):
+            key_path = os.path.expanduser(ssh_config['key_filename'])
+            if not os.path.exists(key_path):
+                LOGGER.warning(f"SSH key file not found: {key_path}")
+            parsed_uri['key_filename'] = key_path
+        if ssh_config.get('jump_hosts'):
+            parsed_uri['jump_hosts'] = ssh_config['jump_hosts']
+        
+        ssh = _connect_ssh_with_jump_hosts(
+            host=parsed_uri['host'],
+            user=parsed_uri['user'],
+            port=parsed_uri['port'],
+            password=parsed_uri['password'],
+            key_filename=parsed_uri['key_filename'],
+            jump_hosts=parsed_uri['jump_hosts']
+        )
+        uri_path = parsed_uri['uri_path']
+    else:
+        # Fall back to original parsing for backward compatibility
+        parsed_uri = ssh_transport.parse_uri(uri)
+        uri_path = parsed_uri.pop('uri_path')
+        transport_params={'connect_kwargs':{'allow_agent':False,'look_for_keys':False}}
+        ssh = ssh_transport._connect_ssh(parsed_uri['host'], parsed_uri['user'], parsed_uri['port'], parsed_uri['password'], transport_params=transport_params)
+    
     sftp_client = ssh.get_transport().open_sftp_client()
     entries = []
     max_results = 10000
@@ -234,11 +435,11 @@ def list_files_in_ftp_server(uri, search_prefix=None):
     from stat import S_ISREG
     import fnmatch
     for row in ftp.mlsd(uri_path):
-        if search_prefix is None or fnmatch.fnmatch(entry[0],search_prefix):
+        if search_prefix is None or fnmatch.fnmatch(row[0],search_prefix):
             if row[1]['type'] == 'file':
                 entries.append({'Key':row[0],'LastModified':datetime.strptime(row[1]['modify'], '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)})
             if len(entries) > max_results:
-                raise print(f"Read more than {max_results} records from the path {uri_path}. Use a more specific "
+                raise ValueError(f"Read more than {max_results} records from the path {uri_path}. Use a more specific "
                              f"search_prefix")
 
     LOGGER.info("Found {} files.".format(entries))

@@ -43,6 +43,27 @@
                 "home": "/home/user/.gnupg",
                 "passphrase": "my_secret_passphrase"
             }
+        },
+        {
+            "path": "sftp://vertex-service-partners-prod@dropbox.versatilecredit.com/path/to/files",
+            "name": "jump_host_data",
+            "pattern": ".*\\.csv$",
+            "start_date": "2017-05-01T00:00:00Z",
+            "key_properties": ["id"],
+            "format": "csv",
+            "ssh": {
+                "key_filename": "~/.ssh/vertex_versatile_key",
+                "jump_hosts": [
+                    {
+                        "host": "35.94.60.173",
+                        "user": "ec2-user"
+                    },
+                    {
+                        "host": "10.20.72.162",
+                        "user": "ec2-user"
+                    }
+                ]
+            }
         }
     ]
 }

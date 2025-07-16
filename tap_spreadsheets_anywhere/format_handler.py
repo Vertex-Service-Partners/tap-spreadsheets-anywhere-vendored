@@ -25,7 +25,86 @@ class InvalidFormatError(Exception):
         return f'{self.name} could not be parsed: {self.message}'
 
 
-def get_streamreader(uri, universal_newlines=True, newline='', open_mode='r', encoding='utf-8'):
+def _get_custom_ssh_reader(uri, open_mode='r', encoding='utf-8', table_spec=None):
+    """Create a custom file reader for SSH with jump host support."""
+    import tap_spreadsheets_anywhere.file_utils as file_utils
+    import urllib.parse
+    
+    # Parse the URI to get the file path
+    parsed = urllib.parse.urlparse(uri)
+    file_path = parsed.path
+    
+    # Check if jump hosts are configured in table_spec
+    ssh_config = table_spec.get('ssh', {}) if table_spec else {}
+    
+    if '?jump=' in uri or '&jump=' in uri or ssh_config.get('jump_hosts'):
+        # Use custom SSH connection with jump host support
+        parsed_uri = file_utils.parse_ssh_uri_with_jumps(uri)
+        
+        # Override with table_spec SSH configuration if provided
+        if ssh_config.get('key_filename'):
+            parsed_uri['key_filename'] = os.path.expanduser(ssh_config['key_filename'])
+        if ssh_config.get('jump_hosts'):
+            parsed_uri['jump_hosts'] = ssh_config['jump_hosts']
+        
+        # Create SSH connection with jump host support
+        ssh_client = file_utils._connect_ssh_with_jump_hosts(
+            host=parsed_uri['host'],
+            user=parsed_uri['user'],
+            port=parsed_uri['port'],
+            password=parsed_uri['password'],
+            key_filename=parsed_uri['key_filename'],
+            jump_hosts=parsed_uri['jump_hosts']
+        )
+        
+        # Open SFTP connection
+        sftp_client = ssh_client.get_transport().open_sftp_client()
+        
+        # Open the file through SFTP
+        if 'b' in open_mode:
+            # Binary mode
+            return sftp_client.open(file_path, mode=open_mode)
+        else:
+            # Text mode - wrap binary stream with text decoder
+            import io
+            binary_stream = sftp_client.open(file_path, mode='rb')
+            if encoding:
+                return io.TextIOWrapper(binary_stream, encoding=encoding, errors='surrogateescape')
+            else:
+                return binary_stream
+    else:
+        # Fall back to smart_open for standard SSH connections
+        return None
+
+
+def _get_ssh_transport_params(uri, table_spec=None):
+    """Get SSH transport parameters, handling jump hosts if present."""
+    # Check if jump hosts are configured in table_spec
+    ssh_config = table_spec.get('ssh', {}) if table_spec else {}
+    
+    if '?jump=' in uri or '&jump=' in uri or ssh_config.get('jump_hosts'):
+        # For jump hosts, we'll use a custom reader instead of smart_open
+        return None
+    else:
+        # Use default SSH transport params
+        return {
+            "transport_params": {
+                "connect_kwargs": {
+                    "allow_agent": True,
+                    "look_for_keys": True
+                }
+            }
+        }
+
+
+def get_streamreader(uri, universal_newlines=True, newline='', open_mode='r', encoding='utf-8', table_spec=None):
+    # Check if we need to use custom SSH reader for jump hosts
+    scheme = uri.split("://", 1)[0]
+    if scheme in ["sftp", "ssh", "scp"]:
+        custom_reader = _get_custom_ssh_reader(uri, open_mode, encoding, table_spec)
+        if custom_reader is not None:
+            return custom_reader
+    
     kwarg_dispatch = {
         "azure": lambda: {
             "transport_params": {
@@ -34,10 +113,17 @@ def get_streamreader(uri, universal_newlines=True, newline='', open_mode='r', en
                 )
             }
         },
+        "sftp": lambda: _get_ssh_transport_params(uri, table_spec),
+        "ssh": lambda: _get_ssh_transport_params(uri, table_spec),
+        "scp": lambda: _get_ssh_transport_params(uri, table_spec),
     }
 
     SCHEME_SEP = "://"
     kwargs = kwarg_dispatch.get(uri.split(SCHEME_SEP, 1)[0], lambda: {})()
+    
+    # Filter out None kwargs
+    if kwargs is None:
+        kwargs = {}
 
     # When reading in binary mode, undefine `encoding`.
     # Otherwise, `smart_open` will return a `TextIOWrapper` in `"r"` mode.
@@ -141,13 +227,15 @@ def get_row_iterator(table_spec, uri):
         # Get GPG configuration from table_spec
         gpg_config = table_spec.get('gpg', {})
         gpg_home = gpg_config.get('home')
+        if gpg_home:
+            gpg_home = os.path.expanduser(gpg_home)
         passphrase = gpg_config.get('passphrase')
         gpg_binary = gpg_config.get('binary', 'gpg')
         
         LOGGER.info(f"Detected GPG-encrypted file: {uri}")
         
         # Read the encrypted file
-        encrypted_reader = get_streamreader(uri, universal_newlines=False, open_mode='rb')
+        encrypted_reader = get_streamreader(uri, universal_newlines=False, open_mode='rb', table_spec=table_spec)
         
         # Decrypt the file and process based on the decrypted content
         with tap_spreadsheets_anywhere.gpg_handler.decrypt_gpg_file(
@@ -196,7 +284,7 @@ def get_row_iterator(table_spec, uri):
             format = 'parquet'
         else:
             # TODO: some protocols provide the ability to pull format (content-type) info & we could make use of that here
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding, table_spec=table_spec)
             buf = reader.read(10)
             reader.seek(0)
             if len(buf) > 0:
@@ -214,24 +302,24 @@ def get_row_iterator(table_spec, uri):
 
     try:
         if format == 'csv':
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding, table_spec=table_spec)
             iterator = tap_spreadsheets_anywhere.csv_handler.get_row_iterator(table_spec, reader)
         elif format == 'excel':
             if uri.lower().endswith(".xls"):
-                reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb')
+                reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb', table_spec=table_spec)
                 iterator = tap_spreadsheets_anywhere.excel_handler.get_legacy_row_iterator(table_spec, reader)
             else:
                 # If encoding is set, smart_open will override binary mode ('b' in open_mode) and it will result in a BadZipFile error
-                reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb', encoding=None)
+                reader = get_streamreader(uri, universal_newlines=universal_newlines,newline=None, open_mode='rb', encoding=None, table_spec=table_spec)
                 iterator = tap_spreadsheets_anywhere.excel_handler.get_row_iterator(table_spec, reader)
         elif format == 'parquet':
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, newline=None, open_mode='rb')
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, newline=None, open_mode='rb', table_spec=table_spec)
             iterator = tap_spreadsheets_anywhere.parquet_handler.get_row_iterator(table_spec, reader)
         elif format == 'json':
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding, table_spec=table_spec)
             iterator = tap_spreadsheets_anywhere.json_handler.get_row_iterator(table_spec, reader)
         elif format == 'jsonl':
-            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding)
+            reader = get_streamreader(uri, universal_newlines=universal_newlines, open_mode='r', encoding=encoding, table_spec=table_spec)
             iterator = tap_spreadsheets_anywhere.jsonl_handler.get_row_iterator(table_spec, reader)
     except (ValueError,TypeError) as err:
         raise InvalidFormatError(uri,message=err)
