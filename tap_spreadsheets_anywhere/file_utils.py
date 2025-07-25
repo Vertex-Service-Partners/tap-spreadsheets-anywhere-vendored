@@ -459,6 +459,7 @@ def list_files_in_SSH_bucket(uri, search_prefix=None, table_spec=None):
                 'allow_agent': False,
                 'look_for_keys': False,
                 'pkey': pkey,
+                'key_filename': None,
             },
         }
         ssh = ssh_transport._connect_ssh(
