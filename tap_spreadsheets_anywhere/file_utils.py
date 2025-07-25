@@ -449,7 +449,8 @@ def list_files_in_SSH_bucket(uri, search_prefix=None, table_spec=None):
         # Fall back to original parsing for backward compatibility
         parsed_uri = ssh_transport.parse_uri(uri)
         uri_path = parsed_uri.pop('uri_path')
-        transport_params={'connect_kwargs':{'allow_agent':False,'look_for_keys':False}}
+        transport_params={'connect_kwargs':{'allow_agent':False,'look_for_keys':False,'pkey':ssh_config.get('key')}}
+        LOGGER.info("SSH Connection Kwargs: %s", ", ".join(transport_params['connect_kwargs']))
         ssh = ssh_transport._connect_ssh(
             parsed_uri['host'],
             parsed_uri['user'],
