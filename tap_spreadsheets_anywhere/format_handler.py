@@ -231,6 +231,7 @@ def get_row_iterator(table_spec, uri):
             gpg_home = os.path.expanduser(gpg_home)
         passphrase = gpg_config.get('passphrase')
         gpg_binary = gpg_config.get('binary', 'gpg')
+        gpg_key = gpg_config.get('key')
         
         LOGGER.info(f"Detected GPG-encrypted file: {uri}")
         
@@ -242,7 +243,8 @@ def get_row_iterator(table_spec, uri):
             encrypted_reader, 
             gpg_home=gpg_home, 
             passphrase=passphrase,
-            gpg_binary=gpg_binary
+            gpg_binary=gpg_binary,
+            key_data=gpg_key,
         ) as decrypted_stream:
             # Remove GPG extension to detect the actual format
             decrypted_uri = uri

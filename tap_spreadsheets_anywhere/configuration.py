@@ -39,10 +39,12 @@ CONFIG_CONTRACT = Schema({
         Optional('gpg'): {
             Optional('home'): str,
             Optional('passphrase'): str,
-            Optional('binary'): str
+            Optional('binary'): str,
+            Optional('key'): str,
         },
         Optional('ssh'): {
             Optional('key_filename'): str,
+            Optional('key'): str,
             Optional('jump_hosts'): [{
                 Required('host'): str,
                 Optional('user'): str,

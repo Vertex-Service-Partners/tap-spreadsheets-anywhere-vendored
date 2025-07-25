@@ -168,7 +168,7 @@ def get_matching_objects(table_spec, modified_since=None):
     return sorted(to_return, key=lambda item: item['last_modified'])
 
 
-def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=None, jump_hosts=None, transport_params=None):
+def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=None, pkey=None, jump_hosts=None, transport_params=None):
     """
     Connect to SSH server with support for jump hosts (ProxyJump).
     
@@ -178,6 +178,7 @@ def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=N
         port: Target port
         password: Password (optional)
         key_filename: Path to private key file
+        pkey: paramiko.PKey object (RSAKey, ECDSAKey, etc.)
         jump_hosts: List of jump host specifications, each as a dict with 'user' and 'host' keys
         transport_params: Additional transport parameters
     
@@ -188,7 +189,9 @@ def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=N
     
     LOGGER.info(f"Connecting to SSH host {user}@{host}:{port}")
     if key_filename:
-        LOGGER.info(f"Using SSH key: {key_filename}")
+        LOGGER.info(f"Using SSH key file: {key_filename}")
+    if pkey:
+        LOGGER.info(f"Using SSH pkey object: {type(pkey).__name__}")
     if jump_hosts:
         jump_host_strs = [f"{jh.get('user', user)}@{jh['host']}:{jh.get('port', 22)}" for jh in jump_hosts]
         LOGGER.info(f"Using jump hosts: {jump_host_strs}")
@@ -213,6 +216,7 @@ def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=N
                         username=jump_host.get('user', user),
                         port=jump_host.get('port', 22),
                         key_filename=key_filename,
+                        pkey=pkey,
                         allow_agent=True,
                         look_for_keys=True
                     )
@@ -233,6 +237,7 @@ def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=N
                     username=jump_host.get('user', user),
                     port=jump_host.get('port', 22),
                     key_filename=key_filename,
+                    pkey=pkey,
                     sock=jump_channel,
                     allow_agent=True,
                     look_for_keys=True
@@ -254,6 +259,7 @@ def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=N
             port=port,
             password=password,
             key_filename=key_filename,
+            pkey=pkey,
             sock=dest_channel,
             allow_agent=True,
             look_for_keys=True
@@ -269,6 +275,7 @@ def _connect_ssh_with_jump_hosts(host, user, port, password=None, key_filename=N
             port=port,
             password=password,
             key_filename=key_filename,
+            pkey=pkey,
             allow_agent=True,
             look_for_keys=True
         )
@@ -337,8 +344,59 @@ def parse_ssh_uri_with_jumps(uri):
         # Handle key file
         if 'key' in params:
             result['key_filename'] = os.path.expanduser(params['key'][0])
-    
+
     return result
+
+
+def _create_pkey_from_data(key_data, passphrase=None):
+    """
+    Create a paramiko PKey object from key data string.
+
+    Args:
+        key_data: String containing the private key data
+        passphrase: Optional passphrase for encrypted keys
+
+    Returns:
+        paramiko.PKey object (RSAKey, ECDSAKey, etc.)
+    """
+    import paramiko
+    from io import StringIO
+
+    if not key_data:
+        return None
+
+    # Try different key types
+    key_file = StringIO(key_data)
+
+    # Try RSA key first
+    try:
+        key_file.seek(0)
+        return paramiko.RSAKey.from_private_key(key_file, password=passphrase)
+    except Exception:
+        pass
+
+    # Try ECDSA key
+    try:
+        key_file.seek(0)
+        return paramiko.ECDSAKey.from_private_key(key_file, password=passphrase)
+    except Exception:
+        pass
+
+    # Try Ed25519 key
+    try:
+        key_file.seek(0)
+        return paramiko.Ed25519Key.from_private_key(key_file, password=passphrase)
+    except Exception:
+        pass
+
+    # Try DSS key
+    try:
+        key_file.seek(0)
+        return paramiko.DSSKey.from_private_key(key_file, password=passphrase)
+    except Exception:
+        pass
+
+    raise ValueError("Unable to parse private key data. Key format not supported or invalid.")
 
 
 def list_files_in_SSH_bucket(uri, search_prefix=None, table_spec=None):
@@ -359,11 +417,21 @@ def list_files_in_SSH_bucket(uri, search_prefix=None, table_spec=None):
         parsed_uri = parse_ssh_uri_with_jumps(uri)
         
         # Override with table_spec SSH configuration if provided
+        pkey = None
         if ssh_config.get('key_filename'):
             key_path = os.path.expanduser(ssh_config['key_filename'])
             if not os.path.exists(key_path):
                 LOGGER.warning(f"SSH key file not found: {key_path}")
             parsed_uri['key_filename'] = key_path
+        elif ssh_config.get('key'):
+            # Handle key data from configuration
+            try:
+                pkey = _create_pkey_from_data(ssh_config['key'])
+                LOGGER.info("Created PKey object from SSH key data")
+            except Exception as e:
+                LOGGER.error(f"Failed to create PKey from key data: {e}")
+                raise
+
         if ssh_config.get('jump_hosts'):
             parsed_uri['jump_hosts'] = ssh_config['jump_hosts']
         
@@ -373,6 +441,7 @@ def list_files_in_SSH_bucket(uri, search_prefix=None, table_spec=None):
             port=parsed_uri['port'],
             password=parsed_uri['password'],
             key_filename=parsed_uri['key_filename'],
+            pkey=pkey,
             jump_hosts=parsed_uri['jump_hosts']
         )
         uri_path = parsed_uri['uri_path']
@@ -381,7 +450,13 @@ def list_files_in_SSH_bucket(uri, search_prefix=None, table_spec=None):
         parsed_uri = ssh_transport.parse_uri(uri)
         uri_path = parsed_uri.pop('uri_path')
         transport_params={'connect_kwargs':{'allow_agent':False,'look_for_keys':False}}
-        ssh = ssh_transport._connect_ssh(parsed_uri['host'], parsed_uri['user'], parsed_uri['port'], parsed_uri['password'], transport_params=transport_params)
+        ssh = ssh_transport._connect_ssh(
+            parsed_uri['host'],
+            parsed_uri['user'],
+            parsed_uri['port'],
+            parsed_uri['password'],
+            transport_params=transport_params,
+        )
     
     sftp_client = ssh.get_transport().open_sftp_client()
     entries = []

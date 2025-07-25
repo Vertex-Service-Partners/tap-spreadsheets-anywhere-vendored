@@ -2,7 +2,7 @@ import gnupg
 import tempfile
 import os
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 LOGGER = logging.getLogger(__name__)
 
@@ -13,8 +13,27 @@ class GPGDecryptionError(Exception):
         super().__init__(self.message)
 
 
+
 @contextmanager
-def decrypt_gpg_file(encrypted_stream, gpg_home=None, passphrase=None, gpg_binary='gpg'):
+def use_temp_key(gpg: gnupg.GPG, key_data, passphrase=None):
+    """
+    Decrypt a GPG-encrypted file and return a file-like object with the decrypted content.
+
+    Args:
+        gpg: GPG process wrapper
+        key_data: String containing the private key data
+        passphrase: Passphrase for the private key (if required)
+
+    Yields:
+        File-like object containing decrypted data
+    """
+    import_result: gnupg.ImportResult = gpg.import_keys(key_data, passphrase=passphrase)
+    yield
+    gpg.delete_keys(import_result.fingerprints, passphrase=passphrase)
+
+
+@contextmanager
+def decrypt_gpg_file(encrypted_stream, gpg_home=None, passphrase=None, gpg_binary='gpg', key_data=None):
     """
     Decrypt a GPG-encrypted file and return a file-like object with the decrypted content.
     
@@ -28,6 +47,11 @@ def decrypt_gpg_file(encrypted_stream, gpg_home=None, passphrase=None, gpg_binar
         File-like object containing decrypted data
     """
     gpg = gnupg.GPG(gnupghome=gpg_home, gpgbinary=gpg_binary)
+
+    if key_data is not None:
+        key_data_context = use_temp_key(gpg, key_data)
+    else:
+        key_data_context = nullcontext
     
     # Create a temporary file to store the decrypted data
     with tempfile.NamedTemporaryFile(mode='w+b', delete=False) as temp_file:
@@ -39,8 +63,9 @@ def decrypt_gpg_file(encrypted_stream, gpg_home=None, passphrase=None, gpg_binar
         
         # Decrypt the data
         LOGGER.info("Decrypting GPG file...")
-        decrypted_data = gpg.decrypt(encrypted_data, passphrase=passphrase, output=temp_filename)
-        
+        with key_data_context:
+            decrypted_data = gpg.decrypt(encrypted_data, passphrase=passphrase, output=temp_filename)
+
         if not decrypted_data.ok:
             error_msg = f"GPG decryption failed: {decrypted_data.status}"
             if decrypted_data.stderr:
