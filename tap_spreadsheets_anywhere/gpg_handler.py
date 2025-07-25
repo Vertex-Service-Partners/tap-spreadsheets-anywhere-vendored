@@ -46,7 +46,34 @@ def decrypt_gpg_file(encrypted_stream, gpg_home=None, passphrase=None, gpg_binar
     Yields:
         File-like object containing decrypted data
     """
-    gpg = gnupg.GPG(gnupghome=gpg_home, gpgbinary=gpg_binary)
+    # Handle GPG home directory - create if it doesn't exist or use temp directory
+    if gpg_home:
+        if not os.path.exists(gpg_home):
+            try:
+                os.makedirs(gpg_home, mode=0o700, exist_ok=True)
+                LOGGER.info(f"Created GPG home directory: {gpg_home}")
+            except (OSError, PermissionError) as e:
+                LOGGER.warning(f"Could not create GPG home directory {gpg_home}: {e}. Using temporary directory.")
+                gpg_home = None
+    
+    # Use temporary directory if no gpg_home specified or creation failed
+    use_temp_gpg_home = gpg_home is None
+    temp_gpg_home = None
+    
+    if use_temp_gpg_home:
+        temp_gpg_home = tempfile.mkdtemp(prefix='gnupg_')
+        # Set secure permissions for GPG home directory
+        os.chmod(temp_gpg_home, 0o700)
+        actual_gpg_home = temp_gpg_home
+        LOGGER.info(f"Using temporary GPG home directory: {actual_gpg_home}")
+    else:
+        actual_gpg_home = gpg_home
+        LOGGER.info(f"Using GPG home directory: {actual_gpg_home}")
+    
+    try:
+        # Use options to avoid lock file issues in containers
+        gpg_options = ['--lock-never', '--no-default-keyring']
+        gpg = gnupg.GPG(gnupghome=actual_gpg_home, gpgbinary=gpg_binary, options=gpg_options)
 
     if key_data is not None:
         key_data_context = use_temp_key(gpg, key_data)
@@ -82,6 +109,15 @@ def decrypt_gpg_file(encrypted_stream, gpg_home=None, passphrase=None, gpg_binar
         # Clean up the temporary file
         if os.path.exists(temp_filename):
             os.unlink(temp_filename)
+        
+        # Clean up temporary GPG home directory if we created one
+        if use_temp_gpg_home and temp_gpg_home and os.path.exists(temp_gpg_home):
+            import shutil
+            try:
+                shutil.rmtree(temp_gpg_home)
+                LOGGER.info(f"Cleaned up temporary GPG home directory: {temp_gpg_home}")
+            except Exception as e:
+                LOGGER.warning(f"Could not clean up temporary GPG home directory {temp_gpg_home}: {e}")
 
 
 def is_gpg_encrypted(uri):
