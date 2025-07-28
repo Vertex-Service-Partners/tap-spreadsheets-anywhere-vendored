@@ -21,6 +21,9 @@ Multiple individual files with the same schema can be configured & ingested into
 ### Compression
 smart_open allows reading and writing gzip and bzip2 files. They are transparently handled over HTTP, S3, and other protocols, too, based on the extension of the file being opened.
 
+### GPG Decryption
+This tap supports automatic decryption of GPG-encrypted files. Files with extensions `.gpg`, `.pgp`, or `.asc` will be automatically decrypted before processing. To use GPG decryption, you need to have GPG installed on your system and configure the appropriate settings in your table configuration.
+
 ### Configuration
 
 The Meltano configuration for this tap must contain the key 'tables' which holds an array of json objects describing each set of targeted source files.
@@ -117,6 +120,16 @@ Each object in the 'tables' array describes one or more CSV or Excel spreadsheet
 - **delimiter**: (optional) the delimiter to use when format is 'csv'. Defaults to a comma ',' but you can set delimiter to 'detect' to leverage the csv "Sniffer" for auto-detecting delimiter. 
 - **quotechar**: (optional) the character used to surround values that may contain delimiters - defaults to a double quote '"'
 - **json_path**: (optional) the JSON key under which the list of objets to use is located. Defaults to None, corresponding to an array at the top level of the JSON tree.
+- **gpg**: (optional) GPG decryption settings for encrypted files. This is an object with the following optional keys:
+  - **home**: Path to GPG home directory containing your keyrings (defaults to system GPG home)
+  - **passphrase**: Passphrase for the private key (if required)
+  - **binary**: Path to the GPG binary (defaults to 'gpg')
+- **ssh**: (optional) SSH connection settings for SFTP connections. This is an object with the following optional keys:
+  - **key_filename**: Path to private key file for authentication
+  - **jump_hosts**: Array of jump host configurations for ProxyJump connections. Each jump host is an object with:
+    - **host**: Jump host hostname or IP (required)
+    - **user**: Username for jump host (optional, defaults to target user)
+    - **port**: Port for jump host (optional, defaults to 22)
 
 ### Automatic Config Generation
 
@@ -165,6 +178,31 @@ JSONL files are expected to parse as one object per line, where each row in a fi
 ### Authentication and Credentials
 
 This tap authenticates with target systems as described in the [smart_open documentation here](https://github.com/RaRe-Technologies/smart_open).
+
+#### SSH/SFTP with Jump Hosts (ProxyJump)
+
+For SSH/SFTP connections that require jump hosts (bastion hosts), you can configure them in two ways:
+
+1. **Using the `ssh` configuration block** (recommended):
+```json
+{
+  "path": "sftp://user@final-host.com/path",
+  "ssh": {
+    "key_filename": "~/.ssh/id_rsa",
+    "jump_hosts": [
+      {"host": "jump1.example.com", "user": "jumpuser1"},
+      {"host": "jump2.example.com", "user": "jumpuser2", "port": 2222}
+    ]
+  }
+}
+```
+
+2. **Using URL query parameters**:
+```
+sftp://user@final-host.com/path?jump=jumpuser1@jump1.example.com,jumpuser2@jump2.example.com:2222&key=~/.ssh/id_rsa
+```
+
+Both methods support multiple jump hosts in sequence. The connection will be established through each jump host in order to reach the final destination.
 
 ### State 
 
