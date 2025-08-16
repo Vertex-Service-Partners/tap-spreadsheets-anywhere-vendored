@@ -33,7 +33,8 @@ CONFIG_CONTRACT = Schema({
         Optional('schema_overrides'): {
             str: {
                 Required('type'): Any(Any('null','string','integer','number','date-time','object'),
-                                      [Any('null','string','integer','number','date-time','object')])
+                                      [Any('null','string','integer','number','date-time','object')]),
+                Optional('format'): str,
             }
         },
         Optional('gpg'): {
