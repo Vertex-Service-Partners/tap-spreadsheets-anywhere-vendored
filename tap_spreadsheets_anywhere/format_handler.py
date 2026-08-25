@@ -108,6 +108,22 @@ def _get_ssh_transport_params(uri, table_spec=None):
         }
 
 
+def _get_azure_transport_params(uri, table_spec=None):
+    """Get Azure transport parameters, handling connection string if present."""
+    env_var = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+    if (
+        table_spec
+        and (azure_config := table_spec.get("azure", {}))
+        and (conn_string := azure_config.get("connection_string", env_var))
+    ):
+        return {
+            "transport_params": {
+                "client": BlobServiceClient.from_connection_string(conn_string)
+            }
+        }
+    return None
+
+
 def get_streamreader(
     uri,
     universal_newlines=True,
@@ -124,13 +140,7 @@ def get_streamreader(
             return custom_reader
 
     kwarg_dispatch = {
-        "azure": lambda: {
-            "transport_params": {
-                "client": BlobServiceClient.from_connection_string(
-                    os.environ["AZURE_STORAGE_CONNECTION_STRING"],
-                )
-            }
-        },
+        "azure": lambda: _get_azure_transport_params(uri, table_spec),
         "sftp": lambda: _get_ssh_transport_params(uri, table_spec),
         "ssh": lambda: _get_ssh_transport_params(uri, table_spec),
         "scp": lambda: _get_ssh_transport_params(uri, table_spec),
