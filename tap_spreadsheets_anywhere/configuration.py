@@ -51,7 +51,10 @@ CONFIG_CONTRACT = Schema({
                 Optional('user'): str,
                 Optional('port'): int
             }]
-        }
+        },
+        Optional('azure'): {
+            Optional('connection_string'): str,
+        },
     }]
 })
 
