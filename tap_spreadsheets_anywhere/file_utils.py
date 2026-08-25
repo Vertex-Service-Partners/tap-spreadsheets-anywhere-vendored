@@ -18,6 +18,9 @@ import smart_open.ftp as ftp_transport
 
 LOGGER = logging.getLogger(__name__)
 
+# Azure's SDK logs request/response details at INFO, which is noisy; quiet it down once at import time.
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+
 
 def resolve_target_uri(table_spec, target_filename):
     protocol, bucket = parse_path(table_spec['path'])
