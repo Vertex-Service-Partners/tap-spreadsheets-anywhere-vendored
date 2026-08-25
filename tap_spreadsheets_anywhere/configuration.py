@@ -6,6 +6,9 @@ from voluptuous import Schema, Required, Any, Optional
 LOGGER = logging.getLogger(__name__)
 
 CONFIG_CONTRACT = Schema({
+    Optional('azure'): {
+        Optional('connection_string'): str,
+    },
     Required('tables'): [{
         Required('path'): str,
         Required('name'): str,
@@ -67,6 +70,9 @@ class Config():
     @classmethod
     def validate(cls, config_json):
         CONFIG_CONTRACT(config_json)
+        if global_azure := config_json.get('azure'):
+            for table_spec in config_json['tables']:
+                table_spec.setdefault('azure', global_azure)
         return config_json
 
     @classmethod
